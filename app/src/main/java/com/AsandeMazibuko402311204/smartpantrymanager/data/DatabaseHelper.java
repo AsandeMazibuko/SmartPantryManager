@@ -5,6 +5,9 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.database.Cursor;
+import java.util.ArrayList;
+import java.util.List;
 
 public class DatabaseHelper extends SQLiteOpenHelper {
 
@@ -104,4 +107,144 @@ public class DatabaseHelper extends SQLiteOpenHelper {
         cv.put(COL_RI_UNIT, unit);
         db.insert(TABLE_RECIPE_INGREDIENTS, null, cv);
     }
+
+
+    // ---------- PANTRY CRUD ----------
+
+    public long addPantryItem(String name, double quantity, String unit, String expiryDate) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv = new ContentValues();
+        cv.put(COL_PANTRY_NAME, name.trim().toLowerCase());
+        cv.put(COL_PANTRY_QTY, quantity);
+        cv.put(COL_PANTRY_UNIT, unit);
+        cv.put(COL_PANTRY_EXPIRY, expiryDate);
+        return db.insert(TABLE_PANTRY, null, cv);
+    }
+
+    public List<PantryItem> getAllPantryItems() {
+        List<PantryItem> items = new ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor cursor = db.query(TABLE_PANTRY, null, null, null, null, null, COL_PANTRY_NAME + " ASC");
+
+        if (cursor.moveToFirst()) {
+            do {
+                items.add(new PantryItem(
+                        cursor.getLong(cursor.getColumnIndexOrThrow(COL_PANTRY_ID)),
+                        cursor.getString(cursor.getColumnIndexOrThrow(COL_PANTRY_NAME)),
+                        cursor.getDouble(cursor.getColumnIndexOrThrow(COL_PANTRY_QTY)),
+                        cursor.getString(cursor.getColumnIndexOrThrow(COL_PANTRY_UNIT)),
+                        cursor.getString(cursor.getColumnIndexOrThrow(COL_PANTRY_EXPIRY))
+                ));
+            } while (cursor.moveToNext());
+        }
+        cursor.close();
+        return items;
+    }
+
+    public int updatePantryItem(long id, String name, double quantity, String unit, String expiryDate) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        ContentValues cv = new ContentValues();
+        cv.put(COL_PANTRY_NAME, name.trim().toLowerCase());
+        cv.put(COL_PANTRY_QTY, quantity);
+        cv.put(COL_PANTRY_UNIT, unit);
+        cv.put(COL_PANTRY_EXPIRY, expiryDate);
+        return db.update(TABLE_PANTRY, cv, COL_PANTRY_ID + " = ?", new String[]{String.valueOf(id)});
+    }
+
+    public void deletePantryItem(long id) {
+        SQLiteDatabase db = this.getWritableDatabase();
+        db.delete(TABLE_PANTRY, COL_PANTRY_ID + " = ?", new String[]{String.valueOf(id)});
+    }
+
+    // ---------- RECIPE READ (with ingredients attached) ----------
+
+    public List<Recipe> getAllRecipesWithIngredients() {
+        List<Recipe> recipes = new ArrayList<>();
+        SQLiteDatabase db = this.getReadableDatabase();
+        Cursor recipeCursor = db.query(TABLE_RECIPES, null, null, null, null, null, COL_RECIPE_NAME + " ASC");
+
+        if (recipeCursor.moveToFirst()) {
+            do {
+                long recipeId = recipeCursor.getLong(recipeCursor.getColumnIndexOrThrow(COL_RECIPE_ID));
+                Recipe recipe = new Recipe(
+                        recipeId,
+                        recipeCursor.getString(recipeCursor.getColumnIndexOrThrow(COL_RECIPE_NAME)),
+                        recipeCursor.getString(recipeCursor.getColumnIndexOrThrow(COL_RECIPE_INSTRUCTIONS))
+                );
+                recipe.setIngredients(getIngredientsForRecipe(db, recipeId));
+                recipes.add(recipe);
+            } while (recipeCursor.moveToNext());
+        }
+        recipeCursor.close();
+        return recipes;
+    }
+
+    private List<RecipeIngredient> getIngredientsForRecipe(SQLiteDatabase db, long recipeId) {
+        List<RecipeIngredient> ingredients = new ArrayList<>();
+        Cursor cursor = db.query(TABLE_RECIPE_INGREDIENTS, null,
+                COL_RI_RECIPE_ID + " = ?", new String[]{String.valueOf(recipeId)},
+                null, null, null);
+
+        if (cursor.moveToFirst()) {
+            do {
+                ingredients.add(new RecipeIngredient(
+                        cursor.getLong(cursor.getColumnIndexOrThrow(COL_RI_ID)),
+                        cursor.getLong(cursor.getColumnIndexOrThrow(COL_RI_RECIPE_ID)),
+                        cursor.getString(cursor.getColumnIndexOrThrow(COL_RI_NAME)),
+                        cursor.getDouble(cursor.getColumnIndexOrThrow(COL_RI_QTY)),
+                        cursor.getString(cursor.getColumnIndexOrThrow(COL_RI_UNIT))
+                ));
+            } while (cursor.moveToNext());
+        }
+        cursor.close();
+        return ingredients;
+    }
+
+
+    // ---------- STRICT MATCHING LOGIC (Section 2.3) ----------
+
+    public List<Recipe> getSuggestedRecipes() {
+        List<Recipe> allRecipes = getAllRecipesWithIngredients();
+        List<PantryItem> pantryItems = getAllPantryItems();
+        List<Recipe> suggested = new ArrayList<>();
+
+        for (Recipe recipe : allRecipes) {
+            if (canMakeRecipe(recipe, pantryItems)) {
+                suggested.add(recipe);
+            }
+        }
+        return suggested;
+    }
+
+    private boolean canMakeRecipe(Recipe recipe, List<PantryItem> pantryItems) {
+        for (RecipeIngredient required : recipe.getIngredients()) {
+            if (!pantryHasEnough(required, pantryItems)) {
+                return false; // even ONE missing ingredient disqualifies the whole recipe
+            }
+        }
+        return true;
+    }
+
+    private boolean pantryHasEnough(RecipeIngredient required, List<PantryItem> pantryItems) {
+        String neededName = normalize(required.getIngredientName());
+
+        for (PantryItem item : pantryItems) {
+            if (normalize(item.getName()).equals(neededName)) {
+                return item.getQuantity() >= required.getRequiredQuantity();
+            }
+        }
+        return false; // ingredient not found in pantry at all
+    }
+
+    // Handles "tomato" vs "tomatoes", extra spaces, and case differences (Section 2.3)
+    private String normalize(String ingredientName) {
+        String cleaned = ingredientName.trim().toLowerCase();
+        if (cleaned.endsWith("es")) {
+            cleaned = cleaned.substring(0, cleaned.length() - 2);
+        } else if (cleaned.endsWith("s") && !cleaned.endsWith("ss")) {
+            cleaned = cleaned.substring(0, cleaned.length() - 1);
+        }
+        return cleaned;
+    }
+
 }

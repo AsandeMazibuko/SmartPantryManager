@@ -1,4 +1,4 @@
-package com.AsandeMazibuko402311204.smartpantrymanager;
+package com.AsandeMazibuko402311204.smartpantrymanager.data;
 
 public class PantryItem {
     private long id;
